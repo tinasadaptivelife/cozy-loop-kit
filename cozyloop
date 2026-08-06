@@ -1,0 +1,671 @@
+#!/usr/bin/env python3
+"""
+cozyloop — turn short clips into long-form sleep / lofi / cozy ambience videos.
+
+    cozyloop build ~/Downloads/myclips --preset rainy-shop --duration 2h -o out.mp4
+
+Needs ffmpeg on PATH. Nothing else.
+"""
+
+import argparse
+import hashlib
+import json
+import math
+import os
+import re
+import subprocess
+import sys
+import tempfile
+
+# realpath, not abspath — this script is normally reached through a symlink on PATH
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "lib"))
+import ambience  # noqa: E402
+
+VIDEO_EXT = {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"}
+
+
+# --------------------------------------------------------------------------
+# util
+# --------------------------------------------------------------------------
+
+def die(msg):
+    print(f"error: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def run(cmd, quiet=False):
+    if not quiet:
+        print(f"  $ ffmpeg {' '.join(cmd[1:5])} ...", flush=True)
+    p = subprocess.run(cmd, capture_output=True, text=True)
+    if p.returncode != 0:
+        sys.stderr.write(p.stderr[-4000:])
+        die(f"ffmpeg failed ({p.returncode})")
+    return p.stderr
+
+
+def probe(path):
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-print_format", "json",
+         "-show_format", "-show_streams", path],
+        capture_output=True, text=True)
+    if out.returncode != 0:
+        die(f"cannot probe {path}")
+    d = json.loads(out.stdout)
+    v = next((s for s in d["streams"] if s["codec_type"] == "video"), None)
+    info = {"path": path, "dur": float(d["format"]["duration"]), "video": bool(v)}
+    if v:
+        num, den = v["r_frame_rate"].split("/")
+        info.update(w=int(v["width"]), h=int(v["height"]),
+                    fps=float(num) / float(den))
+    return info
+
+
+def probe_video(path):
+    i = probe(path)
+    if not i["video"]:
+        die(f"no video stream in {path}")
+    return i
+
+
+def parse_duration(s):
+    s = str(s).strip().lower()
+    if re.fullmatch(r"[\d.]+", s):
+        return float(s)
+    total, found = 0.0, False
+    for val, unit in re.findall(r"([\d.]+)\s*([hms])", s):
+        total += float(val) * {"h": 3600, "m": 60, "s": 1}[unit]
+        found = True
+    if not found:
+        die(f"cannot parse duration '{s}' (try 2h, 90m, 45m30s, 7200)")
+    return total
+
+
+def collect_clips(paths):
+    files = []
+    for p in paths:
+        p = os.path.expanduser(p)
+        if os.path.isdir(p):
+            files += [os.path.join(p, f) for f in sorted(os.listdir(p))
+                      if os.path.splitext(f)[1].lower() in VIDEO_EXT]
+        elif os.path.isfile(p):
+            files.append(p)
+        else:
+            die(f"not found: {p}")
+    if not files:
+        die("no video files found")
+
+    seen, uniq = {}, []
+    for f in files:
+        h = hashlib.md5(open(f, "rb").read()).hexdigest()
+        if h in seen:
+            print(f"  skip (duplicate of {os.path.basename(seen[h])}): "
+                  f"{os.path.basename(f)}")
+            continue
+        seen[h] = f
+        uniq.append(f)
+    return uniq
+
+
+# --------------------------------------------------------------------------
+# video: the seamless master loop
+# --------------------------------------------------------------------------
+
+def build_master(clips, out, fade=1.0, fps=None, size=None, crf=20, preset="slow"):
+    """Chain clips with crossfades, then wrap the last one back into the first.
+
+    The trick: append a second copy of clip 0 as a final segment, then trim
+    [fade, end]. The result's last frame lands exactly one frame before its own
+    first frame, so tiling it is invisible — the wrap dissolve is already baked
+    in rather than being a hard cut.
+    """
+    info = [probe_video(c) for c in clips]
+    fps = fps or info[0]["fps"]
+    W, H = size or (info[0]["w"], info[0]["h"])
+    fade = round(fade * fps) / fps
+
+    lens = [math.floor(i["dur"] * fps) / fps for i in info]
+    for L, i in zip(lens, info):
+        if L <= fade + (1 / fps):
+            die(f"{os.path.basename(i['path'])} is {L:.2f}s, too short for a "
+                f"{fade:.2f}s crossfade")
+
+    n = len(clips)
+    seg_len = lens + [lens[0]]          # + the wrap copy
+    offs = []
+    for i in range(1, n + 1):
+        offs.append(round((sum(seg_len[:i]) - i * fade) * fps) / fps)
+    master_len = offs[-1]
+
+    parts = []
+    for i in range(n + 1):
+        src = i if i < n else 0
+        parts.append(
+            f"[{src}:v]fps={fps},"
+            f"scale={W}:{H}:force_original_aspect_ratio=decrease,"
+            f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p,"
+            f"trim=0:{seg_len[i]},setpts=PTS-STARTPTS[c{i}]"
+        )
+    prev = "c0"
+    for i in range(1, n + 1):
+        nxt = f"v{i}"
+        parts.append(f"[{prev}][c{i}]xfade=transition=fade:"
+                     f"duration={fade}:offset={offs[i-1]}[{nxt}]")
+        prev = nxt
+    parts.append(f"[{prev}]trim=start={fade}:end={master_len + fade},"
+                 f"setpts=PTS-STARTPTS[vout]")
+
+    cmd = ["ffmpeg", "-v", "error", "-stats"]
+    for c in clips:
+        cmd += ["-i", c]
+    cmd += ["-filter_complex", ";".join(parts), "-map", "[vout]", "-an",
+            "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+            "-pix_fmt", "yuv420p", "-g", str(int(fps * 2)),
+            "-keyint_min", str(int(fps * 2)), "-sc_threshold", "0",
+            out, "-y"]
+    run(cmd)
+    return master_len, fps, W, H
+
+
+# --------------------------------------------------------------------------
+# audio
+# --------------------------------------------------------------------------
+
+def measure_lufs(path):
+    err = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-nostats", "-i", path,
+         "-af", "ebur128=peak=true", "-f", "null", "-"],
+        capture_output=True, text=True).stderr
+    m = re.search(r"I:\s+(-?[\d.]+)\s+LUFS", err.split("Integrated")[-1])
+    return float(m.group(1)) if m else None
+
+
+def auto_gain(preset, extra_layers, music, music_level, target,
+              sfx=None, sfx_level=0.8):
+    """Render a short probe at unity, measure it, and solve for the gain that
+    lands the real bed on target. Every preset then arrives at the same
+    loudness without hand-tuning nine layer volumes."""
+    graph = ambience.build_graph(preset, 45, extra_layers=extra_layers,
+                                 master_db=0.0, fade_in=0, fade_out=0,
+                                 music=music, music_level=music_level,
+                                 sfx=sfx, sfx_level=sfx_level)
+    fd, script = tempfile.mkstemp(suffix=".filter")
+    with os.fdopen(fd, "w") as f:
+        f.write(graph)
+    tmp = tempfile.mktemp(suffix=".m4a")
+    run(["ffmpeg", "-v", "error", "-filter_complex_script", script,
+         "-map", "[aout]"] + audio_codec(tmp, "128k") + [tmp, "-y"], quiet=True)
+    measured = measure_lufs(tmp)
+    for f_ in (script, tmp):
+        try:
+            os.unlink(f_)
+        except OSError:
+            pass
+    if measured is None:
+        return 6.0
+    g = max(-12.0, min(28.0, target - measured))
+    print(f"  auto-gain: probe {measured:.1f} LUFS -> {g:+.1f} dB "
+          f"for {target:g} LUFS target")
+    return g
+
+
+# Encoder per output extension. Hardcoding AAC here used to mean `-o bed.wav`
+# produced a WAV container holding an AAC payload — undecodable, and ffmpeg
+# exits 0 on it, so nothing downstream noticed.
+AUDIO_CODECS = {
+    ".m4a": "aac", ".mp4": "aac", ".aac": "aac",
+    ".wav": "pcm_s16le", ".aiff": "pcm_s16be",
+    ".flac": "flac", ".mp3": "libmp3lame", ".opus": "libopus",
+}
+LOSSLESS = {"pcm_s16le", "pcm_s16be", "flac"}
+_encoders = None
+
+
+def have_encoder(name):
+    global _encoders
+    if _encoders is None:
+        out = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"],
+                             capture_output=True, text=True).stdout
+        _encoders = {ln.split()[1] for ln in out.splitlines()
+                     if ln.startswith(" ") and len(ln.split()) > 1}
+    return name in _encoders
+
+
+def audio_codec(out, bitrate="160k"):
+    """Encoder args for an output path, chosen by extension."""
+    ext = os.path.splitext(out)[1].lower()
+    if ext not in AUDIO_CODECS:
+        die(f"unsupported audio output '{ext or out}' — use one of "
+            f"{', '.join(sorted(AUDIO_CODECS))}")
+    enc = AUDIO_CODECS[ext]
+    if not have_encoder(enc):
+        die(f"this ffmpeg has no '{enc}' encoder, needed for {ext} files")
+    args = ["-c:a", enc]
+    if enc not in LOSSLESS:
+        args += ["-b:a", bitrate]
+    return args
+
+
+def build_audio(out, dur, preset, extra_layers=None, master_db=6.0,
+                music=None, music_level=0.55, fade_in=10, fade_out=25,
+                sfx=None, sfx_level=0.8):
+    graph = ambience.build_graph(
+        preset, dur, extra_layers=extra_layers, master_db=master_db,
+        fade_in=fade_in, fade_out=fade_out,
+        music=music, music_level=music_level,
+        sfx=sfx, sfx_level=sfx_level)
+    fd, script = tempfile.mkstemp(suffix=".filter")
+    with os.fdopen(fd, "w") as f:
+        f.write(graph)
+    run(["ffmpeg", "-v", "error", "-stats",
+         "-filter_complex_script", script, "-map", "[aout]"]
+        + audio_codec(out, "160k")
+        + ["-ar", "48000", "-ac", "2", out, "-y"])
+    os.unlink(script)
+
+
+AUDIO_EXT = {".mp3", ".m4a", ".wav", ".flac", ".aac", ".ogg", ".opus", ".aiff"}
+
+
+def collect_music(paths):
+    """Accept files, directories, or a mix. Directories are taken in name order."""
+    files = []
+    for p in paths:
+        p = os.path.expanduser(p)
+        if os.path.isdir(p):
+            files += [os.path.join(p, f) for f in sorted(os.listdir(p))
+                      if os.path.splitext(f)[1].lower() in AUDIO_EXT]
+        elif os.path.isfile(p):
+            files.append(p)
+        else:
+            die(f"music not found: {p}")
+    if not files:
+        die("no audio files found for --music")
+    return files
+
+
+def concat_music(srcs, out, xfade=6.0):
+    """Crossfade several tracks end-to-end into one long playlist.
+
+    Total length is sum(tracks) - xfade*(n-1), so ten 3-minute tracks give ~29
+    minutes before anything repeats. Equal-power curves keep the joins from
+    dipping.
+    """
+    parts, cmd = [], ["ffmpeg", "-v", "error", "-stats"]
+    for i, s in enumerate(srcs):
+        cmd += ["-i", s]
+        parts.append(f"[{i}:a]aformat=channel_layouts=stereo:sample_rates=48000,"
+                     f"asetpts=N/SR/TB[m{i}]")
+    prev = "m0"
+    for i in range(1, len(srcs)):
+        nxt = f"x{i}"
+        parts.append(f"[{prev}][m{i}]acrossfade=d={xfade}:c1=qsin:c2=qsin[{nxt}]")
+        prev = nxt
+    cmd += (["-filter_complex", ";".join(parts), "-map", f"[{prev}]"]
+            + audio_codec(out, "192k") + ["-ar", "48000", out, "-y"])
+    run(cmd)
+    return out
+
+
+def make_music_bed(src, out, xfade=6.0):
+    """Fold a track's tail over its own head so it loops without a seam."""
+    d = float(subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "csv=p=0", src], capture_output=True, text=True).stdout.strip())
+    if d <= xfade * 2:
+        die(f"music track is only {d:.1f}s — too short for a {xfade}s seam fade")
+    body = d - xfade
+    graph = (
+        f"[0:a]atrim=0:{body},asetpts=N/SR/TB,"
+        f"aformat=channel_layouts=stereo:sample_rates=48000,"
+        f"afade=t=in:st=0:d={xfade}:curve=qsin[body];"
+        f"[1:a]atrim={body}:{d},asetpts=N/SR/TB,"
+        f"aformat=channel_layouts=stereo:sample_rates=48000,"
+        f"afade=t=out:st=0:d={xfade}:curve=qsin[tail];"
+        f"[body][tail]amix=inputs=2:duration=first:normalize=0[out]"
+    )
+    run(["ffmpeg", "-v", "error", "-stats", "-i", src, "-i", src,
+         "-filter_complex", graph, "-map", "[out]"]
+        + audio_codec(out, "192k") + ["-ar", "48000", out, "-y"])
+    print(f"  music loop unit: {body:.1f}s (seamless)")
+    return body
+
+
+# --------------------------------------------------------------------------
+# verify
+# --------------------------------------------------------------------------
+
+def verify(path, expect=None):
+    i = probe(path)
+    print(f"\n  {os.path.basename(path)}")
+    geom = (f"{i['w']}x{i['h']} @ {i['fps']:g}fps   " if i["video"] else "audio only   ")
+    print(f"  {geom}{i['dur']:.2f}s ({i['dur']/3600:.2f}h)   "
+          f"{os.path.getsize(path)/1e6:.0f} MB")
+    if expect and abs(i["dur"] - expect) > 1.0:
+        print(f"  !! expected {expect:.0f}s")
+
+    # A full ebur128 scan means decoding the whole file — minutes on a multi-GB
+    # 8-hour render. The bed is statistically uniform, so a window off the middle
+    # measures the same thing in seconds.
+    scan = ["ffmpeg", "-hide_banner", "-nostats"]
+    if i["dur"] > 600:
+        scan += ["-ss", str(i["dur"] * 0.4), "-t", "300"]
+        # Integrated loudness and LRA match the full scan closely; true peak is a
+        # max over the whole file, so a sampled peak is a lower bound. The limiter
+        # caps it anyway — if you need the exact figure, scan the full file.
+        print("  (loudness from a 5-min window mid-file; peak is a lower bound)")
+    scan += ["-i", path, "-af", "ebur128=peak=true", "-f", "null", "-"]
+    err = subprocess.run(scan, capture_output=True, text=True).stderr
+    problems = []
+    for key in ("I:", "LRA:", "Peak:"):
+        m = re.search(rf"{re.escape(key)}\s+(-?[\d.]+)", err.split("Integrated")[-1])
+        if m:
+            print(f"  {key:7s}{m.group(1)}")
+            # Beds target -17 LUFS. Anything near the -70 floor is silence, not
+            # a quiet mix — usually a render that produced no decodable audio.
+            if key == "I:" and float(m.group(1)) < -45:
+                problems.append(f"integrated loudness {m.group(1)} LUFS "
+                                f"is effectively silent")
+        else:
+            print(f"  {key:7s}!! could not measure")
+            problems.append(f"no {key.rstrip(':')} reading")
+    if "Error submitting packet to decoder" in err or "Invalid data found" in err:
+        problems.append("decoder errors while reading the file")
+
+    # spot-check levels so a dropout can't hide in the middle of a long file
+    print("  level spot-check:")
+    for frac in (0.02, 0.25, 0.5, 0.75, 0.97):
+        t = i["dur"] * frac
+        e = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-nostats", "-ss", str(t), "-t", "10",
+             "-i", path, "-af", "volumedetect", "-f", "null", "-"],
+            capture_output=True, text=True).stderr
+        m = re.search(r"mean_volume:\s*(-?[\d.]+)", e)
+        stamp = f"{int(t//3600):d}:{int(t%3600//60):02d}:{int(t%60):02d}"
+        if m:
+            print(f"    {stamp}  mean {m.group(1)} dB")
+        else:
+            print(f"    {stamp}  !! unreadable")
+            problems.append(f"no level at {stamp}")
+
+    # An unreadable file must not pass as a quiet one. Before this, a corrupt
+    # render printed '??' and exited 0 — which reads like a soft bed, not a
+    # broken file, and you would not find out until playback.
+    if problems:
+        die(f"verify failed on {os.path.basename(path)}: "
+            f"{'; '.join(problems)}. The file is not usable.")
+
+
+def detect_flashes(master, thresh=6.0, gap=0.7):
+    """Times of lightning flashes in the master loop, by frame brightness.
+
+    A flash is a short jump in mean luma well above the scene's baseline.
+    Frames within `gap` of each other are one strike, since a flash usually
+    spans several frames and often double-pulses.
+    """
+    # metadata=print writes to the log at info level, which -v error swallows;
+    # send it to stdout instead so the verbosity setting can't hide it.
+    out = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", master, "-vf",
+         "scale=160:90,signalstats,"
+         "metadata=print:key=lavfi.signalstats.YAVG:file=-",
+         "-f", "null", "-"], capture_output=True, text=True).stdout
+    t, vals = None, []
+    for ln in out.splitlines():
+        m = re.search(r"pts_time:([\d.]+)", ln)
+        if m:
+            t = float(m.group(1))
+        m = re.search(r"YAVG=([\d.]+)", ln)
+        if m and t is not None:
+            vals.append((t, float(m.group(1))))
+    if not vals:
+        return []
+    lum = sorted(v for _, v in vals)
+    base = lum[len(lum) // 2]
+    hits = [ts for ts, v in vals if v > base + thresh]
+    # chain against the previous frame, not the start of the group: a strike
+    # that stays bright for two seconds is one strike, not three.
+    out, last = [], None
+    for ts in hits:
+        if last is None or ts - last > gap:
+            out.append(ts)
+        last = ts
+    return out
+
+
+def build_sfx_cycle(src, out, offsets, cycle, gains=(1.0, 0.5, 0.8, 0.4)):
+    """One loop-length track with the strike sample at each offset.
+
+    A hit landing near the end would be cut off by the loop point, so the
+    sample is laid down twice — once at the offset and once a cycle earlier —
+    and the tail that runs past the end wraps back into the head. The result
+    tiles seamlessly no matter how long the render is.
+    """
+    parts, cmd = [], ["ffmpeg", "-v", "error"]
+    for i, o in enumerate(offsets):
+        g = gains[i % len(gains)]
+        for wrap in (0, -cycle):
+            t = o + wrap
+            cmd += ["-i", src]
+            idx = len(parts)
+            parts.append(
+                f"[{idx}:a]aformat=channel_layouts=stereo:sample_rates=48000,"
+                f"volume={g},adelay={max(0, int(t * 1000))}|{max(0, int(t * 1000))}"
+                + (f",atrim=start={-t}" if t < 0 else "") + f"[s{idx}]")
+    graph = ";".join(parts) + ";" + "".join(f"[s{i}]" for i in range(len(parts)))
+    graph += (f"amix=inputs={len(parts)}:duration=longest:normalize=0,"
+              f"atrim=0:{cycle},asetpts=N/SR/TB")
+    cmd += ["-filter_complex", graph, "-t", str(cycle),
+            "-c:a", "pcm_s16le", "-ar", "48000", out, "-y"]
+    run(cmd, quiet=True)
+    return out
+
+
+def seam_check(master):
+    """How different is the loop's last frame from its first? Should be noise."""
+    n = int(subprocess.run(
+        ["ffprobe", "-v", "error", "-count_frames", "-select_streams", "v:0",
+         "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", master],
+        capture_output=True, text=True).stdout.strip())
+    frames = []
+    for idx in (0, n - 1):
+        raw = subprocess.run(
+            ["ffmpeg", "-v", "error", "-i", master,
+             "-vf", f"select=eq(n\\,{idx}),scale=320:-1", "-vsync", "0",
+             "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+            capture_output=True).stdout
+        frames.append(raw)
+    if len(frames[0]) != len(frames[1]) or not frames[0]:
+        return
+    diff = [abs(a - b) for a, b in zip(*frames)]
+    print(f"  loop seam: mean delta {sum(diff)/len(diff):.2f}/255 "
+          f"(under ~5 is imperceptible)")
+
+
+# --------------------------------------------------------------------------
+# commands
+# --------------------------------------------------------------------------
+
+def cmd_build(a):
+    dur = parse_duration(a.duration)
+    clips = collect_clips(a.clips)
+    print(f"\n[clips] {len(clips)} unique")
+    for c in clips:
+        print(f"  - {os.path.basename(c)}")
+
+    workdir = a.work or os.path.join(os.path.dirname(os.path.abspath(a.out)) or ".",
+                                     "_cozyloop_work")
+    os.makedirs(workdir, exist_ok=True)
+    master = os.path.join(workdir, "master_loop.mp4")
+    bed = os.path.join(workdir, "ambience.m4a")
+
+    print(f"\n[video] building master loop ({a.fade}s crossfades, wrap included)")
+    size = None
+    if a.size:
+        size = tuple(int(x) for x in a.size.lower().split("x"))
+    mlen, fps, W, H = build_master(clips, master, fade=a.fade, fps=a.fps,
+                                   size=size, crf=a.crf, preset=a.x264preset)
+    print(f"  master cycle: {mlen:g}s  {W}x{H} @ {fps:g}fps")
+    seam_check(master)
+
+    music_unit = None
+    if a.music:
+        tracks = collect_music(a.music)
+        print(f"\n[music] {len(tracks)} track(s)")
+        for t in tracks:
+            print(f"  - {os.path.basename(t)}")
+        src = os.path.expanduser(tracks[0])
+        if len(tracks) > 1:
+            src = concat_music(tracks, os.path.join(workdir, "music_cat.m4a"),
+                               a.music_xfade)
+        music_unit = os.path.join(workdir, "music_loop.m4a")
+        make_music_bed(src, music_unit, a.music_xfade)
+
+    extra = []
+    for spec in (a.layer or []):
+        name, _, lvl = spec.partition(":")
+        extra.append((name, {"level": float(lvl)} if lvl else {}))
+
+    sfx_cycle = None
+    if a.sync_thunder or a.thunder_sfx:
+        flashes = detect_flashes(master)
+        if not flashes:
+            print("\n[sync] no lightning found in the loop — thunder left free-running")
+        else:
+            params = dict(next((p for n, p in extra if n == "thunder"), {}))
+            params.update(triggers=flashes, cycle=mlen, delay=a.thunder_delay)
+            if a.thunder_sfx:
+                # The sample supplies the strike, so the synth layer drops its
+                # own crack and contributes only the long roll underneath —
+                # a 2s sample on its own is a bang with no tail.
+                params.setdefault("crack", 0.05)
+                sfx_cycle = build_sfx_cycle(
+                    os.path.expanduser(a.thunder_sfx),
+                    os.path.join(workdir, "thunder_cycle.wav"),
+                    [(f + a.thunder_delay) % mlen for f in flashes], mlen)
+            extra = [(n, p) for n, p in extra if n != "thunder"]
+            extra.append(("thunder", params))
+            print(f"\n[sync] {len(flashes)} flashes in the {mlen:g}s loop at "
+                  + ", ".join(f"{f:.1f}s" for f in flashes)
+                  + f"; thunder follows {a.thunder_delay:g}s behind each"
+                  + (f"\n  strikes from {os.path.basename(a.thunder_sfx)}, "
+                     f"roll from the synth layer" if a.thunder_sfx else ""))
+
+    print(f"\n[audio] '{a.preset}' bed, {dur:g}s single pass"
+          + (" + music" if music_unit else ""))
+    gain = a.gain if a.gain is not None else auto_gain(
+        a.preset, extra, music_unit, a.music_level, a.target_lufs,
+        sfx=sfx_cycle, sfx_level=a.thunder_sfx_level)
+    build_audio(bed, dur, a.preset, extra_layers=extra, master_db=gain,
+                music=music_unit, music_level=a.music_level,
+                fade_in=a.fade_in, fade_out=a.fade_out,
+                sfx=sfx_cycle, sfx_level=a.thunder_sfx_level)
+
+    loops = math.ceil(dur / mlen)
+    print(f"\n[mux] tiling master {loops}x, trimming to {dur:g}s")
+    run(["ffmpeg", "-v", "error", "-stats",
+         "-stream_loop", str(loops - 1), "-i", master, "-i", bed,
+         "-map", "0:v", "-map", "1:a", "-c", "copy", "-t", str(dur),
+         "-movflags", "+faststart", a.out, "-y"])
+
+    print("\n[verify]")
+    verify(a.out, expect=dur)
+    print(f"\ndone -> {a.out}\n")
+
+
+def cmd_audio(a):
+    audio_codec(a.out)          # reject a bad -o before spending time on auto-gain
+    dur = parse_duration(a.duration)
+    extra = []
+    for spec in (a.layer or []):
+        name, _, lvl = spec.partition(":")
+        extra.append((name, {"level": float(lvl)} if lvl else {}))
+    music_unit = None
+    if a.music:
+        tracks = collect_music(a.music)
+        src = os.path.expanduser(tracks[0])
+        if len(tracks) > 1:
+            src = concat_music(tracks,
+                               os.path.splitext(a.out)[0] + "_musiccat.m4a",
+                               a.music_xfade)
+        music_unit = os.path.splitext(a.out)[0] + "_musicloop.m4a"
+        make_music_bed(src, music_unit, a.music_xfade)
+    gain = a.gain if a.gain is not None else auto_gain(
+        a.preset, extra, music_unit, a.music_level, a.target_lufs)
+    build_audio(a.out, dur, a.preset, extra_layers=extra, master_db=gain,
+                music=music_unit, music_level=a.music_level,
+                fade_in=a.fade_in, fade_out=a.fade_out)
+    verify(a.out, expect=dur)
+
+
+def cmd_presets(a):
+    print("\nPRESETS")
+    for k, v in ambience.PRESETS.items():
+        names = ", ".join(n for n, _ in v["layers"])
+        print(f"\n  {k}\n    {v['desc']}\n    layers: {names}")
+    print("\nLAYERS (for --layer name[:level])")
+    print("  " + ", ".join(sorted(ambience.LAYERS)) + "\n")
+
+
+def cmd_verify(a):
+    verify(a.file)
+
+
+def main():
+    p = argparse.ArgumentParser(prog="cozyloop", description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    def audio_opts(q):
+        q.add_argument("--preset", default="rainy-shop")
+        q.add_argument("--layer", action="append",
+                       help="add/override a layer, e.g. --layer clock:0.05")
+        q.add_argument("--gain", type=float, default=None,
+                       help="fixed master gain dB; overrides --target-lufs")
+        q.add_argument("--target-lufs", type=float, default=-17.0,
+                       help="auto-gain target (default -17, good for YouTube)")
+        q.add_argument("--music", action="append",
+                       help="music file or folder; repeatable. Multiple tracks "
+                            "are crossfaded into one long playlist before looping")
+        q.add_argument("--music-level", type=float, default=0.55)
+        q.add_argument("--music-xfade", type=float, default=6.0)
+        q.add_argument("--fade-in", type=float, default=10)
+        q.add_argument("--fade-out", type=float, default=25)
+
+    b = sub.add_parser("build", help="clips + ambience -> finished video")
+    b.add_argument("clips", nargs="+", help="clip files or a directory")
+    b.add_argument("-o", "--out", required=True)
+    b.add_argument("-d", "--duration", default="2h")
+    b.add_argument("--fade", type=float, default=1.0, help="crossfade seconds")
+    b.add_argument("--fps", type=float)
+    b.add_argument("--size", help="WxH, e.g. 1920x1080")
+    b.add_argument("--crf", type=int, default=20)
+    b.add_argument("--x264preset", default="slow")
+    b.add_argument("--work")
+    b.add_argument("--sync-thunder", action="store_true",
+                   help="trigger thunder off lightning flashes in the footage")
+    b.add_argument("--thunder-delay", type=float, default=3.0,
+                   help="seconds between flash and thunder (distance)")
+    b.add_argument("--thunder-sfx",
+                   help="audio file to use for the strike, synced to lightning")
+    b.add_argument("--thunder-sfx-level", type=float, default=0.8)
+    audio_opts(b)
+    b.set_defaults(func=cmd_build)
+
+    a_ = sub.add_parser("audio", help="ambience bed only")
+    a_.add_argument("-o", "--out", required=True)
+    a_.add_argument("-d", "--duration", default="90")
+    audio_opts(a_)
+    a_.set_defaults(func=cmd_audio)
+
+    sub.add_parser("presets", help="list presets and layers").set_defaults(func=cmd_presets)
+
+    v = sub.add_parser("verify", help="check a finished file")
+    v.add_argument("file")
+    v.set_defaults(func=cmd_verify)
+
+    args = p.parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()
