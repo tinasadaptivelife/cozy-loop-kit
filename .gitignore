@@ -1,0 +1,30 @@
+# === Python ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Environments
+.venv/
+venv/
+ENV/
+env/
+*.venv
+
+# === macOS System Files ===
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# === IDEs & Editors ===
+.vscode/
+.idea/
+*.swp
+*~
+
+# === Media / Large Binary Assets ===
+# Optional: Uncomment the lines below if sample media should NOT be tracked in Git.
+ samples/*.m4a
+ samples/*.mp4
