@@ -1,4 +1,14 @@
-# === Python ===
+# ============================================================
+#  cozy-loop-kit is a tool. Only program code, docs, and this
+#  file are tracked. Everything a build consumes or produces —
+#  clips, music, ambience beds, rendered videos, work dirs — is
+#  media and stays out of Git, wherever in the tree it lands.
+# ============================================================
+
+
+# ---------- Program code: housekeeping ----------
+
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -12,19 +22,70 @@ ENV/
 env/
 *.venv
 
-# === macOS System Files ===
+# macOS system files
 .DS_Store
 .AppleDouble
 .LSOverride
 ._*
 
-# === IDEs & Editors ===
+# IDEs & editors
 .vscode/
 .idea/
 *.swp
 *~
 
-# === Media / Large Binary Assets ===
-# Optional: Uncomment the lines below if sample media should NOT be tracked in Git.
- samples/*.m4a
- samples/*.mp4
+
+# ---------- Media: inputs ----------
+# Source clips and music dropped into the repo to run a build.
+
+*.mp4
+*.mov
+*.mkv
+*.webm
+*.avi
+*.m4v
+*.mpg
+*.mpeg
+
+*.mp3
+*.m4a
+*.wav
+*.flac
+*.aac
+*.ogg
+*.opus
+*.aif
+*.aiff
+
+
+# ---------- Media: generated output ----------
+# Rendered videos, ambience beds, probes, extracted frames, and
+# the per-build work directory cozyloop writes next to -o.
+
+_cozyloop_work/
+**/_cozyloop_work/
+*.filter
+
+# Extracted frames / thumbnails
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.webp
+*.bmp
+*.tif
+*.tiff
+
+# Common scratch / drop folders
+/clips/
+/samples/
+/renders/
+/output/
+/out/
+/tmp/
+
+
+# ---------- Escape hatch ----------
+# To track a specific asset anyway (a doc screenshot, a tiny
+# demo clip), force it past these rules:
+#     git add -f path/to/asset
