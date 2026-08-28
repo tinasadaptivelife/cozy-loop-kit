@@ -551,10 +551,34 @@ PRESETS = {
 }
 
 
-def build_graph(preset_name, dur, extra_layers=None, master_db=6.0,
-                fade_in=10, fade_out=25, music=None, music_level=0.55,
-                sfx=None, sfx_level=0.8):
-    """Assemble the full ambience filtergraph."""
+def finishing_filter(master_db, dur, fade_in=10, fade_out=25, target_peak=-1.5):
+    """The gain + limiter + fade chain, run as its own ffmpeg pass over a
+    materialized mix.
+
+    It used to be chained directly onto amix's output inside one complex
+    filtergraph, but amix (especially fed from looping amovie sources, as
+    every bed here is) emits irregular frame sizes that make alimiter's
+    lookahead silently under-clamp — verified by rendering the identical
+    mix + limit through amix-chained vs. a separate pass: same numbers
+    in, ~1.7dB hotter out when chained. Splitting the pass is the fix,
+    not a bigger safety margin.
+
+    AAC's reconstruction filter can still overshoot the sample peak it's
+    given afterward — worse on broadband, impulsive material (vinyl
+    crackle, rain spray) than on music — so the limiter ceiling sits below
+    target_peak rather than at it.
+    """
+    limit = 10 ** ((target_peak - 1.8) / 20)
+    return (f"volume={master_db}dB,alimiter=level_in=1:level_out=1:"
+            f"limit={limit:.4f}:attack=5:release=120:level=disabled,"
+            f"afade=t=in:st=0:d={fade_in},"
+            f"afade=t=out:st={max(0, float(dur) - fade_out)}:d={fade_out}")
+
+
+def build_graph(preset_name, dur, extra_layers=None, music=None, music_level=0.55,
+                sfx=None, sfx_level=0.8, source_audio=None, source_audio_level=0.7):
+    """Assemble the raw mix filtergraph (layers + source audio + sfx + music,
+    no gain/limiter/fades — see finishing_filter for that pass)."""
     sp = SeedPool()
     chunks, labels = [], []
 
@@ -569,14 +593,27 @@ def build_graph(preset_name, dur, extra_layers=None, master_db=6.0,
         chunks.append(chain)
         labels.append(lbl)
 
-    if not labels:
-        raise SystemExit("no ambience layers selected")
+    if not labels and not sfx and not source_audio and not music:
+        raise SystemExit("no ambience layers, source audio, sfx, or music selected")
 
-    mix_in = "".join(f"[{l}]" for l in labels)
-    n = len(labels)
-    tail = (f"{mix_in}amix=inputs={n}:duration=first:normalize=0,"
-            f"volume={master_db}dB,"
-            f"highpass=f=28:poles=1,lowpass=f=12000:poles=1")
+    if labels:
+        mix_in = "".join(f"[{l}]" for l in labels)
+        n = len(labels)
+        tail = (f"{mix_in}amix=inputs={n}:duration=first:normalize=0,"
+                f"highpass=f=28:poles=1,lowpass=f=12000:poles=1")
+    else:
+        tail = f"anullsrc=channel_layout=stereo:sample_rate=48000,atrim=0:{dur}"
+
+    if source_audio:
+        # The clips' own embedded audio, looped over the whole render the same
+        # way music is. Mixed in ahead of sfx and music so those sit above it.
+        path = str(source_audio).replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+        chunks.append(
+            f"amovie=filename='{path}':loop=0,asetpts=N/SR/TB,"
+            f"aformat=channel_layouts=stereo:sample_rates=48000,"
+            f"atrim=0:{dur},volume={source_audio_level}[SRC]"
+        )
+        tail = f"{tail}[AMBS];[AMBS][SRC]amix=inputs=2:duration=first:normalize=0"
 
     if sfx:
         # A one-cycle strike track, looped. Because the cycle is the video's
@@ -601,9 +638,6 @@ def build_graph(preset_name, dur, extra_layers=None, master_db=6.0,
         )
         tail = f"{tail}[AMB];[AMB][MUSIC]amix=inputs=2:duration=first:normalize=0"
 
-    tail += (f",alimiter=level_in=1:level_out=1:limit=0.85:attack=5:release=120,"
-             f"afade=t=in:st=0:d={fade_in},"
-             f"afade=t=out:st={max(0, float(dur) - fade_out)}:d={fade_out}[aout]")
-
+    tail += "[aout]"
     chunks.append(tail)
     return ";".join(chunks)

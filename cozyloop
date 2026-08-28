@@ -52,7 +52,9 @@ def probe(path):
         die(f"cannot probe {path}")
     d = json.loads(out.stdout)
     v = next((s for s in d["streams"] if s["codec_type"] == "video"), None)
-    info = {"path": path, "dur": float(d["format"]["duration"]), "video": bool(v)}
+    a = next((s for s in d["streams"] if s["codec_type"] == "audio"), None)
+    info = {"path": path, "dur": float(d["format"]["duration"]),
+            "video": bool(v), "audio": bool(a)}
     if v:
         num, den = v["r_frame_rate"].split("/")
         info.update(w=int(v["width"]), h=int(v["height"]),
@@ -110,15 +112,22 @@ def collect_clips(paths):
 # video: the seamless master loop
 # --------------------------------------------------------------------------
 
-def build_master(clips, out, fade=1.0, fps=None, size=None, crf=20, preset="slow"):
+def build_master(clips, out, fade=1.0, fps=None, size=None, crf=20, preset="slow",
+                 keep_audio=False):
     """Chain clips with crossfades, then wrap the last one back into the first.
 
     The trick: append a second copy of clip 0 as a final segment, then trim
     [fade, end]. The result's last frame lands exactly one frame before its own
     first frame, so tiling it is invisible — the wrap dissolve is already baked
     in rather than being a hard cut.
+
+    With keep_audio, each clip's own embedded audio is carried through the same
+    crossfade points as the video (acrossfade mirrors xfade's concatenate-with-
+    overlap semantics), instead of being dropped in favour of a synthesised bed.
     """
     info = [probe_video(c) for c in clips]
+    if keep_audio and not all(i["audio"] for i in info):
+        die("--keep-source-audio requires every clip to have an audio stream")
     fps = fps or info[0]["fps"]
     W, H = size or (info[0]["w"], info[0]["h"])
     fade = round(fade * fps) / fps
@@ -145,23 +154,39 @@ def build_master(clips, out, fade=1.0, fps=None, size=None, crf=20, preset="slow
             f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p,"
             f"trim=0:{seg_len[i]},setpts=PTS-STARTPTS[c{i}]"
         )
+        if keep_audio:
+            parts.append(
+                f"[{src}:a]atrim=0:{seg_len[i]},asetpts=PTS-STARTPTS,"
+                f"aformat=channel_layouts=stereo:sample_rates=48000[ca{i}]"
+            )
     prev = "c0"
+    prev_a = "ca0"
     for i in range(1, n + 1):
         nxt = f"v{i}"
         parts.append(f"[{prev}][c{i}]xfade=transition=fade:"
                      f"duration={fade}:offset={offs[i-1]}[{nxt}]")
         prev = nxt
+        if keep_audio:
+            na = f"a{i}"
+            parts.append(f"[{prev_a}][ca{i}]acrossfade=d={fade}:c1=tri:c2=tri[{na}]")
+            prev_a = na
     parts.append(f"[{prev}]trim=start={fade}:end={master_len + fade},"
                  f"setpts=PTS-STARTPTS[vout]")
+    if keep_audio:
+        parts.append(f"[{prev_a}]atrim=start={fade}:end={master_len + fade},"
+                     f"asetpts=PTS-STARTPTS[aout]")
 
     cmd = ["ffmpeg", "-v", "error", "-stats"]
     for c in clips:
         cmd += ["-i", c]
-    cmd += ["-filter_complex", ";".join(parts), "-map", "[vout]", "-an",
-            "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+    cmd += ["-filter_complex", ";".join(parts), "-map", "[vout]"]
+    cmd += ["-map", "[aout]"] if keep_audio else ["-an"]
+    cmd += ["-c:v", "libx264", "-preset", preset, "-crf", str(crf),
             "-pix_fmt", "yuv420p", "-g", str(int(fps * 2)),
-            "-keyint_min", str(int(fps * 2)), "-sc_threshold", "0",
-            out, "-y"]
+            "-keyint_min", str(int(fps * 2)), "-sc_threshold", "0"]
+    if keep_audio:
+        cmd += ["-c:a", "aac", "-b:a", "192k", "-ar", "48000"]
+    cmd += [out, "-y"]
     run(cmd)
     return master_len, fps, W, H
 
@@ -179,15 +204,39 @@ def measure_lufs(path):
     return float(m.group(1)) if m else None
 
 
+def measure_peak(path):
+    err = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-nostats", "-i", path,
+         "-af", "ebur128=peak=true", "-f", "null", "-"],
+        capture_output=True, text=True).stderr
+    m = re.search(r"Peak:\s+(-?[\d.]+)\s+dBFS", err.split("True peak")[-1])
+    return float(m.group(1)) if m else None
+
+
 def auto_gain(preset, extra_layers, music, music_level, target,
-              sfx=None, sfx_level=0.8):
-    """Render a short probe at unity, measure it, and solve for the gain that
-    lands the real bed on target. Every preset then arrives at the same
-    loudness without hand-tuning nine layer volumes."""
-    graph = ambience.build_graph(preset, 45, extra_layers=extra_layers,
-                                 master_db=0.0, fade_in=0, fade_out=0,
+              sfx=None, sfx_level=0.8, source_audio=None,
+              source_audio_level=0.7, target_peak=-1.5,
+              probe_dur=None, mlen=None):
+    """Render a probe at unity, measure it, and solve for the gain that lands
+    the real bed on target — capped so true peak stays safe too.
+
+    Real embedded clip audio (source_audio) can already sit close to 0 dBFS at
+    the source, unlike the synthesised layers, which were always designed with
+    headroom. A LUFS-only solve can therefore ask for a gain that clips; the
+    peak-derived gain is computed in parallel and the more conservative of the
+    two wins. Synthesised-only beds are unaffected — their peaks stay low
+    enough that the LUFS gain remains the binding constraint.
+
+    The probe covers a full loop cycle of source_audio (mlen) when given,
+    rather than an arbitrary 45s window, so a rare loud transient (a bicycle
+    bell, a door latch) isn't missed by chance.
+    """
+    dur = probe_dur or (mlen if source_audio and mlen else 45)
+    graph = ambience.build_graph(preset, dur, extra_layers=extra_layers,
                                  music=music, music_level=music_level,
-                                 sfx=sfx, sfx_level=sfx_level)
+                                 sfx=sfx, sfx_level=sfx_level,
+                                 source_audio=source_audio,
+                                 source_audio_level=source_audio_level)
     fd, script = tempfile.mkstemp(suffix=".filter")
     with os.fdopen(fd, "w") as f:
         f.write(graph)
@@ -195,6 +244,7 @@ def auto_gain(preset, extra_layers, music, music_level, target,
     run(["ffmpeg", "-v", "error", "-filter_complex_script", script,
          "-map", "[aout]"] + audio_codec(tmp, "128k") + [tmp, "-y"], quiet=True)
     measured = measure_lufs(tmp)
+    peak = measure_peak(tmp)
     for f_ in (script, tmp):
         try:
             os.unlink(f_)
@@ -202,10 +252,21 @@ def auto_gain(preset, extra_layers, music, music_level, target,
             pass
     if measured is None:
         return 6.0
-    g = max(-12.0, min(28.0, target - measured))
-    print(f"  auto-gain: probe {measured:.1f} LUFS -> {g:+.1f} dB "
-          f"for {target:g} LUFS target")
-    return g
+    lufs_gain = target - measured
+    g = lufs_gain
+    if peak is not None:
+        peak_gain = target_peak - peak
+        if peak_gain < lufs_gain:
+            g = peak_gain
+            print(f"  auto-gain: probe {measured:.1f} LUFS / {peak:.1f} dBTP peak "
+                  f"-> {g:+.1f} dB (peak-limited, LUFS target would clip)")
+        else:
+            print(f"  auto-gain: probe {measured:.1f} LUFS / {peak:.1f} dBTP peak "
+                  f"-> {g:+.1f} dB for {target:g} LUFS target")
+    else:
+        print(f"  auto-gain: probe {measured:.1f} LUFS -> {g:+.1f} dB "
+              f"for {target:g} LUFS target")
+    return max(-12.0, min(28.0, g))
 
 
 # Encoder per output extension. Hardcoding AAC here used to mean `-o bed.wav`
@@ -247,20 +308,31 @@ def audio_codec(out, bitrate="160k"):
 
 def build_audio(out, dur, preset, extra_layers=None, master_db=6.0,
                 music=None, music_level=0.55, fade_in=10, fade_out=25,
-                sfx=None, sfx_level=0.8):
+                sfx=None, sfx_level=0.8, source_audio=None,
+                source_audio_level=0.7, target_peak=-1.5):
     graph = ambience.build_graph(
-        preset, dur, extra_layers=extra_layers, master_db=master_db,
-        fade_in=fade_in, fade_out=fade_out,
+        preset, dur, extra_layers=extra_layers,
         music=music, music_level=music_level,
-        sfx=sfx, sfx_level=sfx_level)
+        sfx=sfx, sfx_level=sfx_level,
+        source_audio=source_audio, source_audio_level=source_audio_level)
     fd, script = tempfile.mkstemp(suffix=".filter")
     with os.fdopen(fd, "w") as f:
         f.write(graph)
-    run(["ffmpeg", "-v", "error", "-stats",
-         "-filter_complex_script", script, "-map", "[aout]"]
+    # The gain/limiter/fade chain runs as its own pass over a materialized
+    # mix rather than chained onto amix's output in one complex filtergraph —
+    # see ambience.finishing_filter for why (amix's frame sizing makes
+    # alimiter under-clamp when the two are fused).
+    mix = tempfile.mktemp(suffix=".wav")
+    run(["ffmpeg", "-v", "error", "-stats", "-filter_complex_script", script,
+         "-map", "[aout]", "-ar", "48000", "-ac", "2", "-c:a", "pcm_s16le",
+         mix, "-y"])
+    os.unlink(script)
+    finish = ambience.finishing_filter(master_db, dur, fade_in=fade_in,
+                                       fade_out=fade_out, target_peak=target_peak)
+    run(["ffmpeg", "-v", "error", "-stats", "-i", mix, "-af", finish]
         + audio_codec(out, "160k")
         + ["-ar", "48000", "-ac", "2", out, "-y"])
-    os.unlink(script)
+    os.unlink(mix)
 
 
 AUDIO_EXT = {".mp3", ".m4a", ".wav", ".flac", ".aac", ".ogg", ".opus", ".aiff"}
@@ -485,6 +557,21 @@ def seam_check(master):
 # commands
 # --------------------------------------------------------------------------
 
+def parse_layer_spec(spec):
+    """'clock' -> (clock, {}); 'clock:0.05' -> (clock, {level: 0.05});
+    'vinyl:level=0.04,thump=0' -> (vinyl, {level: 0.04, thump: 0.0})."""
+    name, _, rest = spec.partition(":")
+    if not rest:
+        return name, {}
+    if "=" in rest:
+        params = {}
+        for pair in rest.split(","):
+            k, _, v = pair.partition("=")
+            params[k] = float(v)
+        return name, params
+    return name, {"level": float(rest)}
+
+
 def cmd_build(a):
     dur = parse_duration(a.duration)
     clips = collect_clips(a.clips)
@@ -492,20 +579,33 @@ def cmd_build(a):
     for c in clips:
         print(f"  - {os.path.basename(c)}")
 
+    clips_have_audio = any(probe_video(c)["audio"] for c in clips)
+    if clips_have_audio and not a.keep_source_audio and a.preset is None:
+        die("these clips carry their own audio — pass --keep-source-audio to "
+            "use it (tune its volume with --source-audio-level), or --preset "
+            "<name> to replace it with a synthesised ambience bed instead "
+            "('cozyloop presets' lists them). Combine both to mix source "
+            "audio under a synthesised bed.")
+    if a.preset is None:
+        a.preset = None if (a.keep_source_audio or a.music or a.sfx) else "rainy-shop"
+
     workdir = a.work or os.path.join(os.path.dirname(os.path.abspath(a.out)) or ".",
                                      "_cozyloop_work")
     os.makedirs(workdir, exist_ok=True)
     master = os.path.join(workdir, "master_loop.mp4")
     bed = os.path.join(workdir, "ambience.m4a")
 
-    print(f"\n[video] building master loop ({a.fade}s crossfades, wrap included)")
+    print(f"\n[video] building master loop ({a.fade}s crossfades, wrap included)"
+          + (", keeping source audio" if a.keep_source_audio else ""))
     size = None
     if a.size:
         size = tuple(int(x) for x in a.size.lower().split("x"))
     mlen, fps, W, H = build_master(clips, master, fade=a.fade, fps=a.fps,
-                                   size=size, crf=a.crf, preset=a.x264preset)
+                                   size=size, crf=a.crf, preset=a.x264preset,
+                                   keep_audio=a.keep_source_audio)
     print(f"  master cycle: {mlen:g}s  {W}x{H} @ {fps:g}fps")
     seam_check(master)
+    source_audio = master if a.keep_source_audio else None
 
     music_unit = None
     if a.music:
@@ -520,10 +620,7 @@ def cmd_build(a):
         music_unit = os.path.join(workdir, "music_loop.m4a")
         make_music_bed(src, music_unit, a.music_xfade)
 
-    extra = []
-    for spec in (a.layer or []):
-        name, _, lvl = spec.partition(":")
-        extra.append((name, {"level": float(lvl)} if lvl else {}))
+    extra = [parse_layer_spec(spec) for spec in (a.layer or [])]
 
     sfx_cycle = None
     if a.sync_thunder or a.thunder_sfx:
@@ -550,15 +647,35 @@ def cmd_build(a):
                   + (f"\n  strikes from {os.path.basename(a.thunder_sfx)}, "
                      f"roll from the synth layer" if a.thunder_sfx else ""))
 
+    sfx_unit, sfx_level = sfx_cycle, a.thunder_sfx_level
+    if sfx_unit is None and a.sfx:
+        tracks = collect_music(a.sfx)
+        print(f"\n[sfx] {len(tracks)} track(s)")
+        for t in tracks:
+            print(f"  - {os.path.basename(t)}")
+        src = os.path.expanduser(tracks[0])
+        if len(tracks) > 1:
+            src = concat_music(tracks, os.path.join(workdir, "sfx_cat.m4a"),
+                               a.music_xfade)
+        sfx_unit = os.path.join(workdir, "sfx_loop.m4a")
+        make_music_bed(src, sfx_unit, a.music_xfade)
+        sfx_level = a.sfx_level
+
     print(f"\n[audio] '{a.preset}' bed, {dur:g}s single pass"
+          + (" + source audio" if source_audio else "")
+          + (" + sfx" if sfx_unit else "")
           + (" + music" if music_unit else ""))
     gain = a.gain if a.gain is not None else auto_gain(
         a.preset, extra, music_unit, a.music_level, a.target_lufs,
-        sfx=sfx_cycle, sfx_level=a.thunder_sfx_level)
+        sfx=sfx_unit, sfx_level=sfx_level,
+        source_audio=source_audio, source_audio_level=a.source_audio_level,
+        target_peak=a.target_peak, mlen=mlen)
     build_audio(bed, dur, a.preset, extra_layers=extra, master_db=gain,
                 music=music_unit, music_level=a.music_level,
                 fade_in=a.fade_in, fade_out=a.fade_out,
-                sfx=sfx_cycle, sfx_level=a.thunder_sfx_level)
+                sfx=sfx_unit, sfx_level=sfx_level,
+                source_audio=source_audio, source_audio_level=a.source_audio_level,
+                target_peak=a.target_peak)
 
     loops = math.ceil(dur / mlen)
     print(f"\n[mux] tiling master {loops}x, trimming to {dur:g}s")
@@ -575,10 +692,7 @@ def cmd_build(a):
 def cmd_audio(a):
     audio_codec(a.out)          # reject a bad -o before spending time on auto-gain
     dur = parse_duration(a.duration)
-    extra = []
-    for spec in (a.layer or []):
-        name, _, lvl = spec.partition(":")
-        extra.append((name, {"level": float(lvl)} if lvl else {}))
+    extra = [parse_layer_spec(spec) for spec in (a.layer or [])]
     music_unit = None
     if a.music:
         tracks = collect_music(a.music)
@@ -615,14 +729,19 @@ def main():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    def audio_opts(q):
-        q.add_argument("--preset", default="rainy-shop")
+    def audio_opts(q, preset_default="rainy-shop"):
+        q.add_argument("--preset", default=preset_default,
+                       help="ambience preset ('cozyloop presets' lists them)")
         q.add_argument("--layer", action="append",
-                       help="add/override a layer, e.g. --layer clock:0.05")
+                       help="add/override a layer, e.g. --layer clock:0.05 or "
+                            "--layer vinyl:level=0.04,thump=0")
         q.add_argument("--gain", type=float, default=None,
                        help="fixed master gain dB; overrides --target-lufs")
         q.add_argument("--target-lufs", type=float, default=-17.0,
                        help="auto-gain target (default -17, good for YouTube)")
+        q.add_argument("--target-peak", type=float, default=-1.5,
+                       help="auto-gain true-peak ceiling in dBTP (default -1.5); "
+                            "wins over --target-lufs when the two conflict")
         q.add_argument("--music", action="append",
                        help="music file or folder; repeatable. Multiple tracks "
                             "are crossfaded into one long playlist before looping")
@@ -641,6 +760,13 @@ def main():
     b.add_argument("--crf", type=int, default=20)
     b.add_argument("--x264preset", default="slow")
     b.add_argument("--work")
+    b.add_argument("--keep-source-audio", action="store_true",
+                   help="use the clips' own embedded audio (crossfaded the same "
+                        "way as the video) instead of / underneath a synthesised "
+                        "ambience bed. Required if the clips have audio and "
+                        "--preset isn't given, so the choice is never silent.")
+    b.add_argument("--source-audio-level", type=float, default=0.7,
+                   help="mix level for --keep-source-audio (default 0.7)")
     b.add_argument("--sync-thunder", action="store_true",
                    help="trigger thunder off lightning flashes in the footage")
     b.add_argument("--thunder-delay", type=float, default=3.0,
@@ -648,7 +774,13 @@ def main():
     b.add_argument("--thunder-sfx",
                    help="audio file to use for the strike, synced to lightning")
     b.add_argument("--thunder-sfx-level", type=float, default=0.8)
-    audio_opts(b)
+    b.add_argument("--sfx", action="append",
+                   help="real ambience/SFX file or folder to loop underneath "
+                        "everything, independent of --preset (repeatable; "
+                        "crossfaded into one seamless loop, same treatment as "
+                        "--music)")
+    b.add_argument("--sfx-level", type=float, default=0.8)
+    audio_opts(b, preset_default=None)
     b.set_defaults(func=cmd_build)
 
     a_ = sub.add_parser("audio", help="ambience bed only")
