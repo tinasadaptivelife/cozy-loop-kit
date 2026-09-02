@@ -217,6 +217,14 @@ The building blocks used throughout:
 - **Irregularity** — several incommensurate periods (2.7 / 4.3 / 6.7) summed. The ear cannot
   find the pattern, which is what separates rain from a metronome
 
+## Video diaries
+
+Short films of a day — real phone footage, music, and message cards — are a different job
+from looping ambience, with their own process. See [`docs/diary-workflow.md`](docs/diary-workflow.md)
+and the [`docs/STORYBOARD.template.md`](docs/STORYBOARD.template.md).
+
+---
+
 ## Known limits
 
 - **Aesthetic sounds are approximations.** Rain, fire, wind and clocks synthesise convincingly.
