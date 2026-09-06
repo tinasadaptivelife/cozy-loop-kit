@@ -33,6 +33,37 @@ You can also run it as a module: `python -m cozyloop ...`.
 
 ---
 
+## MCP server
+
+`cozyloop-mcp` exposes the tool over the Model Context Protocol, so an assistant
+can drive it directly instead of shell-scripting the CLI.
+
+```bash
+pipx install "git+https://github.com/tinasadaptivelife/cozy-loop-kit"
+pipx inject cozyloop "mcp>=1.2"          # or: pip install "cozyloop[mcp]"
+```
+
+Register it (Claude Code):
+
+```bash
+claude mcp add cozyloop -- cozyloop-mcp
+```
+
+or in `claude_desktop_config.json`:
+
+```json
+{ "mcpServers": { "cozyloop": { "command": "cozyloop-mcp" } } }
+```
+
+**Tools:** `list_presets`, `build`, `render_ambience`, `job_status`, `list_jobs`,
+`cancel_job`, `verify`. `build` and `render_ambience` run as background jobs —
+they return a job record and, with `wait=true` (default), block until the render
+finishes or `timeout_s` elapses, then you poll `job_status`. Each build gets its
+own `--work` directory automatically, so concurrent jobs never collide. Job
+scratch lives under the system temp dir (override with `COZYLOOP_MCP_JOBS`).
+
+---
+
 ## What it does for you
 
 Every step that was manual on the Franky video is now automatic:

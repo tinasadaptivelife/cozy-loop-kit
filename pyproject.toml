@@ -23,12 +23,17 @@ dynamic = ["version"]
 # on PATH, which pip cannot install — see the README.
 dependencies = []
 
+[project.optional-dependencies]
+# `pip install 'cozyloop[mcp]'` to also get the MCP server (cozyloop-mcp).
+mcp = ["mcp>=1.2"]
+
 [project.urls]
 Homepage = "https://github.com/tinasadaptivelife/cozy-loop-kit"
 Source = "https://github.com/tinasadaptivelife/cozy-loop-kit"
 
 [project.scripts]
 cozyloop = "cozyloop.cli:main"
+cozyloop-mcp = "cozyloop.mcp_server:main"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
