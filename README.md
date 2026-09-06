@@ -27,7 +27,7 @@ them and tells you if they're missing.
 
 ```bash
 brew tap tinasadaptivelife/cozy-loop-kit https://github.com/tinasadaptivelife/cozy-loop-kit
-brew install cozyloop        # or: brew install --HEAD cozyloop  (until v0.1.0 is tagged)
+brew install cozyloop        # add --HEAD to build the tip of main instead
 ```
 
 **Working from a clone without installing:** the repo-root `./cozyloop` script runs

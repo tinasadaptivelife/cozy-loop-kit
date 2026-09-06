@@ -4,13 +4,14 @@ class Cozyloop < Formula
   desc "Turn short generated clips into long-form sleep/lofi/cozy ambience videos"
   homepage "https://github.com/tinasadaptivelife/cozy-loop-kit"
 
-  # Stable builds track tagged releases. To cut one:
-  #   git tag v0.1.0 && git push origin v0.1.0
-  #   curl -sL https://github.com/tinasadaptivelife/cozy-loop-kit/archive/refs/tags/v0.1.0.tar.gz | shasum -a 256
-  # then paste the digest into `sha256` (replacing the zeros) and bump `version`.
+  # Stable builds track tagged releases. To cut the next one:
+  #   git tag vX.Y.Z && git push origin vX.Y.Z
+  #   curl -sL https://github.com/tinasadaptivelife/cozy-loop-kit/archive/refs/tags/vX.Y.Z.tar.gz | shasum -a 256
+  # then update `url`, `version`, and `sha256`, keeping `version` in step with
+  # src/cozyloop/__init__.py.
   url "https://github.com/tinasadaptivelife/cozy-loop-kit/archive/refs/tags/v0.1.0.tar.gz"
   version "0.1.0"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  sha256 "7fc1b8bc68ec7d1b93fdbd629bcd0591954edb305db90ea7f3a076230e46a8cc"
   license "MIT"
   head "https://github.com/tinasadaptivelife/cozy-loop-kit.git", branch: "main"
 
