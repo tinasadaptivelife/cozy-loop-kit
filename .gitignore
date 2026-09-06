@@ -15,6 +15,12 @@ __pycache__/
 *.so
 .Python
 
+# Packaging build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+
 # Environments
 .venv/
 venv/

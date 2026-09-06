@@ -14,10 +14,22 @@ Requires `ffmpeg` and `ffprobe` on PATH. No Python packages, no API keys, no net
 ## Install
 
 ```bash
-ln -s ~/Claude_Canva/cozy-loop-kit/cozyloop /opt/homebrew/bin/cozyloop
+pipx install git+https://github.com/tinasadaptivelife/cozy-loop-kit
 ```
 
-Then `cozyloop` works from anywhere. (Or call it by full path.)
+That puts `cozyloop` on your PATH in its own isolated environment. `pip install .`
+from a clone works too. There are no Python dependencies — the only requirement is
+`ffmpeg` and `ffprobe` on PATH (`brew install ffmpeg`); `cozyloop build` checks for
+them and tells you if they're missing.
+
+**Working from a clone without installing:** the repo-root `./cozyloop` script runs
+straight from the checkout, so an existing symlink keeps working:
+
+```bash
+ln -s "$PWD/cozyloop" /opt/homebrew/bin/cozyloop
+```
+
+You can also run it as a module: `python -m cozyloop ...`.
 
 ---
 
