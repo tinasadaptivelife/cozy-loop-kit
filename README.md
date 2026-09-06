@@ -22,6 +22,14 @@ from a clone works too. There are no Python dependencies — the only requiremen
 `ffmpeg` and `ffprobe` on PATH (`brew install ffmpeg`); `cozyloop build` checks for
 them and tells you if they're missing.
 
+**Homebrew:** this repo is also its own tap ([`Formula/`](Formula/README.md)), and
+`brew` pulls in `ffmpeg` for you:
+
+```bash
+brew tap tinasadaptivelife/cozy-loop-kit https://github.com/tinasadaptivelife/cozy-loop-kit
+brew install cozyloop        # or: brew install --HEAD cozyloop  (until v0.1.0 is tagged)
+```
+
 **Working from a clone without installing:** the repo-root `./cozyloop` script runs
 straight from the checkout, so an existing symlink keeps working:
 
