@@ -14,10 +14,61 @@ Requires `ffmpeg` and `ffprobe` on PATH. No Python packages, no API keys, no net
 ## Install
 
 ```bash
-ln -s ~/Claude_Canva/cozy-loop-kit/cozyloop /opt/homebrew/bin/cozyloop
+pipx install git+https://github.com/tinasadaptivelife/cozy-loop-kit
 ```
 
-Then `cozyloop` works from anywhere. (Or call it by full path.)
+That puts `cozyloop` on your PATH in its own isolated environment. `pip install .`
+from a clone works too. There are no Python dependencies — the only requirement is
+`ffmpeg` and `ffprobe` on PATH (`brew install ffmpeg`); `cozyloop build` checks for
+them and tells you if they're missing.
+
+**Homebrew:** this repo is also its own tap ([`Formula/`](Formula/README.md)), and
+`brew` pulls in `ffmpeg` for you:
+
+```bash
+brew tap tinasadaptivelife/cozy-loop-kit https://github.com/tinasadaptivelife/cozy-loop-kit
+brew install cozyloop        # add --HEAD to build the tip of main instead
+```
+
+**Working from a clone without installing:** the repo-root `./cozyloop` script runs
+straight from the checkout, so an existing symlink keeps working:
+
+```bash
+ln -s "$PWD/cozyloop" /opt/homebrew/bin/cozyloop
+```
+
+You can also run it as a module: `python -m cozyloop ...`.
+
+---
+
+## MCP server
+
+`cozyloop-mcp` exposes the tool over the Model Context Protocol, so an assistant
+can drive it directly instead of shell-scripting the CLI.
+
+```bash
+pipx install "git+https://github.com/tinasadaptivelife/cozy-loop-kit"
+pipx inject cozyloop "mcp>=1.2"          # or: pip install "cozyloop[mcp]"
+```
+
+Register it (Claude Code):
+
+```bash
+claude mcp add cozyloop -- cozyloop-mcp
+```
+
+or in `claude_desktop_config.json`:
+
+```json
+{ "mcpServers": { "cozyloop": { "command": "cozyloop-mcp" } } }
+```
+
+**Tools:** `list_presets`, `build`, `render_ambience`, `job_status`, `list_jobs`,
+`cancel_job`, `verify`. `build` and `render_ambience` run as background jobs —
+they return a job record and, with `wait=true` (default), block until the render
+finishes or `timeout_s` elapses, then you poll `job_status`. Each build gets its
+own `--work` directory automatically, so concurrent jobs never collide. Job
+scratch lives under the system temp dir (override with `COZYLOOP_MCP_JOBS`).
 
 ---
 

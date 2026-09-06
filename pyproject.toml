@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cozyloop"
+description = "Turn short generated clips into long-form sleep / lofi / cozy ambience videos."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [{ name = "Tina Brissette" }]
+keywords = ["ffmpeg", "video", "ambience", "lofi", "sleep", "youtube", "loop"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Topic :: Multimedia :: Video :: Non-Linear Editor",
+    "Topic :: Multimedia :: Sound/Audio :: Mixers",
+    "Programming Language :: Python :: 3",
+]
+dynamic = ["version"]
+
+# No Python dependencies by design. The only requirement is ffmpeg + ffprobe
+# on PATH, which pip cannot install — see the README.
+dependencies = []
+
+[project.optional-dependencies]
+# `pip install 'cozyloop[mcp]'` to also get the MCP server (cozyloop-mcp).
+mcp = ["mcp>=1.2"]
+
+[project.urls]
+Homepage = "https://github.com/tinasadaptivelife/cozy-loop-kit"
+Source = "https://github.com/tinasadaptivelife/cozy-loop-kit"
+
+[project.scripts]
+cozyloop = "cozyloop.cli:main"
+cozyloop-mcp = "cozyloop.mcp_server:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.dynamic]
+version = { attr = "cozyloop.__version__" }
