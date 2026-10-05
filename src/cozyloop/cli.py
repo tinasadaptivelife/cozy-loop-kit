@@ -609,10 +609,11 @@ def need_generated_ok(a):
               f"{', '.join(harsh)}. Use them only if asked for.")
 
 
-def youtube_master(path, dur, i_target=-14.0, tp_target=-1.0):
+def youtube_master(path, dur, i_target=-14.0, tp_target=-1.5):
     """Two-pass loudnorm on the finished bed so the file meets the YouTube
     gate (-14 LUFS +/- 1, true peak <= -1.0 dBTP).
-    The mix targets are only a starting point; this step lands it."""
+    The mix targets are only a starting point; this step lands it. The peak
+    target sits 0.5 dB under the gate because AAC encoding overshoots it."""
     flt = f"loudnorm=I={i_target}:TP={tp_target}:LRA=11"
     r = subprocess.run(["ffmpeg", "-hide_banner", "-nostats", "-i", path,
                         "-af", flt + ":print_format=json", "-f", "null", "-"],
