@@ -4,7 +4,7 @@ Turn a handful of short generated clips into a long-form sleep / lofi / cozy amb
 One command, no sample libraries, no licensing exposure.
 
 ```bash
-cozyloop build ~/Downloads/my_clips --preset rainy-shop -d 2h -o video.mp4
+cozyloop build ~/Downloads/my_clips --preset rainy-shop --generated-sound-ok -d 2h -o video.mp4
 ```
 
 Requires `ffmpeg` and `ffprobe` on PATH. No Python packages, no API keys, no network.
@@ -95,7 +95,7 @@ Two hours of finished video takes about 8 minutes, nearly all of it the audio pa
 
 ```bash
 # The Franky video, reproduced exactly
-cozyloop build ~/clips/franky --preset rainy-shop -d 2h -o franky_2h.mp4
+cozyloop build ~/clips/franky --preset rainy-shop --generated-sound-ok -d 2h -o franky_2h.mp4
 
 # Lofi study video with your own music under rain and vinyl crackle
 cozyloop build ~/clips/cafe --preset lofi-rain -d 3h \
@@ -211,7 +211,7 @@ ambience bed never repeats, but the music does.
 | `--fade` | `1.0` | Crossfade seconds. Longer = dreamier; 2–3s suits slow scenes |
 | `--crf` | `20` | 23–24 roughly halves file size with no visible loss on illustrated art |
 | `--size` / `--fps` | from clip 1 | e.g. `--size 1920x1080` |
-| `--target-lufs` | `-17` | YouTube attenuates loud uploads but won't boost quiet ones |
+| `--target-lufs` | `-14` | YouTube gate: -14 LUFS (+/- 1), true peak -1.0 dBTP. A final two-pass loudness step lands it; `cozyloop verify` prints PASS/FAIL. `--no-youtube-master` skips it |
 | `--gain` | auto | Fixed dB; disables auto-gain |
 | `--music-level` | `0.55` | Music against the ambience bed |
 | `--music-xfade` | `6` | Seam crossfade when looping the music |
@@ -277,3 +277,7 @@ The building blocks used throughout:
   it matters.
 - **It won't detect burnt-in watermarks.** If a generator baked its UI into the pixels, the
   tool will happily loop it. Eyeball your clips first.
+
+## Choosing the sound (changed 2026-10-05)
+
+There is no default sound bed. `build` and `audio` stop and ask for one of: `--keep-source-audio` (the clips' own sound; mute any clip that has music or talking first), `--sfx <file|folder>` (real sound effects), `--music <file|folder>`, or `--preset <name> --generated-sound-ok` (synthesised; the `clock`, `drips`, `vinyl`, `knock` and `creak` layers print a warning because they sound abrupt and unnatural).
