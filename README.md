@@ -124,6 +124,26 @@ cozyloop verify video.mp4
 
 ---
 
+## Song Loop Short (`cozyloop short`)
+
+A vertical 9:16 Short: **one song, played once**, over scenery clips cut to the song's sections,
+with an ambience bed (a river, rain...) under it, an opening card, an end card and a custom cover.
+Everything is in one JSON spec; `examples/river-knows.short.json` is the first one.
+
+```bash
+cozyloop short my.short.json --sheet   # 5 frames per clip: catch baked-in titles and watermarks first
+cozyloop short my.short.json --cards   # cover, end card, opening-card preview (fast, to review)
+cozyloop short my.short.json           # the video: 1080x1920, 30 fps, -14 LUFS / -1 dBTP
+```
+
+- **Timeline:** each `[start, clip]` plays until the next start. Put starts on the song's sections
+  (verse, chorus...). An optional third value is an in-point. Use it to skip a title a generator
+  faded out in the first seconds.
+- **Checks:** every clip must cover its slot plus the 1 s crossfade. The command names any that don't.
+- **Captions:** none are burned in. Ship the lyrics as a separate `.srt` for YouTube closed captions.
+- **Pillow:** the cards need it (`pip install pillow`), or give `image:` PNGs instead. The look
+  defaults to The Woonsocket Wonders microclips cards; pass `look` for other fonts and colours.
+
 ## Presets
 
 `cozyloop presets` lists them with their layers.

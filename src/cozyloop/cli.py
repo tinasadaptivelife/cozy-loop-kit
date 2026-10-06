@@ -18,7 +18,7 @@ import subprocess
 import sys
 import tempfile
 
-from cozyloop import __version__, ambience
+from cozyloop import __version__, ambience, short
 
 VIDEO_EXT = {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"}
 
@@ -879,8 +879,10 @@ def main():
     v.add_argument("file")
     v.set_defaults(func=cmd_verify)
 
+    short.add_parser(sub)
+
     args = p.parse_args()
-    if args.cmd in ("build", "audio", "verify"):
+    if args.cmd in ("build", "audio", "verify", "short"):
         require_ffmpeg()
     args.func(args)
 

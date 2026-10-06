@@ -1,0 +1,129 @@
+{
+  "_about": "Song Loop Short: 'The River Knows' over Scenery_Woonsocket, 2026-09-30. Starts are the song's sections (Whisper): 0:00 intro, 0:12 verse 1, 0:37 chorus, 1:00 verse 2, 1:25 chorus, 1:47 final chorus (golden memory), 2:23 outro.",
+  "out": "~/Ambient_Videos/Cozy_Loop_Builds/woonsocket_river_knows_short/woonsocket_river_knows_short.mp4",
+  "song": "~/Ambient_Videos/music/Woonsocket_Wonder_inspired/The River Knows.mp3",
+  "song_end": 157.0,
+  "clips_root": "~/NAS/xil-projects/Scenery_Woonsocket",
+  "xfade": 1.0,
+  "timeline": [
+    [
+      0.0,
+      "blackstone-river/River_flowing_in_New_England_20260930115709.mp4"
+    ],
+    [
+      6.5,
+      "_default/River_flowing_past_old_mill_20260930120655.mp4"
+    ],
+    [
+      12.0,
+      "frankys-shop/Snow_falling_on_cobblestones_20260930122620.mp4"
+    ],
+    [
+      19.0,
+      "high-street/Frosty_sidewalk_and_stone_wall_20260930131041.mp4"
+    ],
+    [
+      28.0,
+      "beaumont-house/Curtain_stirring_by_frosted_window_20260930121051.mp4"
+    ],
+    [
+      37.0,
+      "blackstone-river/Mill_town_flowing_water_snow_20260930114912.mp4"
+    ],
+    [
+      45.0,
+      "river-hill/Wind_blowing_leaves_across_ground_20260930121437.mp4"
+    ],
+    [
+      52.0,
+      "raspberry-bend/Ripples_at_river_edge_20260930121956.mp4"
+    ],
+    [
+      60.0,
+      "frankys-shop/Haze_drifting_inside_candy_shop_20260930122648.mp4"
+    ],
+    [
+      68.0,
+      "high-street/Streetlamp_glowing_in_snow_20260930131046.mp4",
+      2.2
+    ],
+    [
+      74.8,
+      "high-street/Leaves_stirring_on_frosty_sidewalk_20260930131107.mp4"
+    ],
+    [
+      79.5,
+      "bandstand/Leaves_blowing_across_bandstand_…_20260930134539.mp4"
+    ],
+    [
+      85.0,
+      "rose-bush-bend/Dark_water_sweeping_river_bend_20260930132246.mp4"
+    ],
+    [
+      92.0,
+      "bandstand/Mist_over_river_at_dusk_20260930134643.mp4"
+    ],
+    [
+      100.0,
+      "mill-district/Water_running_through_mill_race_20260930133747.mp4"
+    ],
+    [
+      107.0,
+      "golden-memory/Flickering_light_in_mill_windows_20260930122257.mp4"
+    ],
+    [
+      116.0,
+      "golden-memory/Waterwheel_turning_in_crystal_water_20260930122301.mp4"
+    ],
+    [
+      125.0,
+      "golden-memory/Waterwheel_turning_in_clear_water_20260930122320.mp4"
+    ],
+    [
+      134.0,
+      "golden-memory/Light_flickering_in_mill_windows_20260930122328.mp4"
+    ],
+    [
+      143.0,
+      "_default/Snow_drifting_past_brick_window_20260930120728.mp4"
+    ],
+    [
+      150.6,
+      "_default/River_flowing_past_stone_walls_20260930120723.mp4",
+      2.6
+    ]
+  ],
+  "bed": [
+    "~/NAS/xil-projects/SFX/thewoonsocketwonders/AMBIENCE-_Gentle_River_Flowing.mp3"
+  ],
+  "bed_level": 0.8,
+  "intro": {
+    "seconds": 4.5,
+    "kicker": "A sample cozy loop",
+    "title": "November on the Blackstone",
+    "lines": [
+      "The Woonsocket Wonders-inspired music,",
+      "created in Google Flow Music",
+      "Song: The River Knows"
+    ]
+  },
+  "end_card": {
+    "seconds": 5.0,
+    "kicker": "Hear the story",
+    "title": "The River That Remembers",
+    "label": "An audio drama · Season One",
+    "lines": [
+      "Listen free on Substack and YouTube",
+      "wisdomandwiresstudio.substack.com"
+    ],
+    "art": "rose-bush-bend/River_bending_near_ancient_oak_2K_20260930132305.jpg"
+  },
+  "cover": {
+    "frame": "blackstone-river/Mill_town_flowing_water_snow_20260930114912.mp4",
+    "t": 5.0,
+    "kicker": "A sample cozy loop",
+    "title": "The River Knows",
+    "label": "Inspired music"
+  },
+  "bed_lufs": -37
+}
