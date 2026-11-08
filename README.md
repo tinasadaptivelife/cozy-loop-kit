@@ -301,3 +301,37 @@ The building blocks used throughout:
 ## Choosing the sound (changed 2026-10-05)
 
 There is no default sound bed. `build` and `audio` stop and ask for one of: `--keep-source-audio` (the clips' own sound; mute any clip that has music or talking first), `--sfx <file|folder>` (real sound effects), `--music <file|folder>`, or `--preset <name> --generated-sound-ok` (synthesised; the `clock`, `drips`, `vinyl`, `knock` and `creak` layers print a warning because they sound abrupt and unnatural).
+
+## Notes from a one-hour build (2026-11-08)
+
+Things learnt making a 1-hour, 1080p, 9-clip loop with a 20-song playlist and a real sound-effects bed.
+
+**Add opening and end cards without re-encoding the hour.**
+The slow way is to hand the finished hour to a tool that joins a card and re-encodes everything (at a higher quality and a different frame rate). That took far longer than the build and would have made the file about twice as big. The fast way:
+
+1. Opening card: lay it *over* the first seconds of the loop instead of in front of it, so the music starts under the card. One pass (`overlay`, card fading out with `fade=t=out:alpha=1`).
+2. End card: render the card on its own (20 s), then encode it to match the master exactly: same codec and profile, same frame rate (`-r 24`), `yuv420p`, same `--crf`, AAC 48 kHz stereo (a silent track from `anullsrc`).
+3. Join with the concat demuxer and copy the streams: no re-encode, done in seconds.
+
+```bash
+printf "file 'master.mp4'\nfile 'endcard_matched.mp4'\n" > concat.txt
+ffmpeg -f concat -safe 0 -i concat.txt -c copy -movflags +faststart final.mp4
+```
+
+4. Any sound fix after that touches the audio only: `-c:v copy` and re-encode just the AAC.
+
+**Check the size on a short sample first.** The old rule of thumb (about 0.45 GB per hour at `--crf 25`) holds for flat illustrated art. Detailed, panning clips came out at about 2.1 GB per hour at the same `--crf 25`. Multiply the 4-minute sample's bitrate by the full length before starting a long render, and raise `--crf` if it will not fit the upload limit.
+
+**Clips whose own sound is music.** If every clip's native audio has to go, `build` still sees audio streams and asks for a sound choice. Pass `--keep-source-audio --source-audio-level 0` together with `--sfx` (or mute the clips first) so the bed and the music carry the sound.
+
+**`verify` can fail while the whole file is fine.** `verify` measures a 5-minute window in the middle. With a long playlist whose songs differ in loudness, the whole file can sit at -14.0 LUFS while that window reads -12.7. Even the songs out (audio only), then a two-pass `loudnorm` to -14 LUFS / -1.5 dBTP and a light `alimiter`, and check again:
+
+```bash
+ffmpeg -i final.mp4 -vn -af "dynaudnorm=f=3000:g=31:m=3:p=0.9" even.wav
+# measure even.wav with loudnorm print_format=json, then:
+ffmpeg -i final.mp4 -i even.wav -map 0:v -map 1:a -c:v copy \
+  -af "loudnorm=I=-14:TP=-1.5:LRA=11:measured_I=..:measured_TP=..:measured_LRA=..:measured_thresh=..:offset=..:linear=true,alimiter=limit=0.80:level=false" \
+  -c:a aac -b:a 192k out.mp4
+```
+
+**Chapter times** for a crossfaded playlist: each song starts at the running sum of the earlier songs' lengths minus 6 s (the crossfade) per earlier song. When the playlist is shorter than the video, it wraps and the first songs play again.
